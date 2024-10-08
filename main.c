@@ -10,6 +10,12 @@
 
 
 
+#define COLUMN_USERNAME_SIZE 32
+#define COLUMN_EMAIL_SIZE 255
+#define size_of_attribute(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
+#define TABLE_MAX_PAGES 100
+
+
 typedef struct {
     char* buffer;
     size_t buffer_length;
@@ -37,8 +43,7 @@ typedef enum {
 
 typedef enum { STATEMENT_INSERT, STATEMENT_SELECT } StatementType;
 
-#define COLUMN_USERNAME_SIZE 32
-#define COLUMN_EMAIL_SIZE 255
+
 
 typedef struct {
     uint32_t id;
@@ -51,7 +56,7 @@ typedef struct {
     Row row_to_insert; // only used by insert statement
 } Statement;
 
-#define size_of_attribute(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
+
 
 const uint32_t ID_SIZE = size_of_attribute(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
@@ -62,7 +67,6 @@ const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
 const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
 
 const uint32_t PAGE_SIZE = 4096;
-#define TABLE_MAX_PAGES 100
 
 
 typedef struct {
@@ -70,11 +74,11 @@ typedef struct {
     uint32_t file_length;
     uint32_t num_pages;
     void* pages[TABLE_MAX_PAGES];
-} Pager;
+} Storage_Manager;
 
 typedef struct {
     uint32_t root_page_num;
-    Pager* pager;
+    Storage_Manager* Storage_Manager;
 } Table;
 
 typedef struct {
@@ -170,36 +174,36 @@ const uint32_t INTERNAL_NODE_CELL_SIZE =
 
 
 
-void* get_page(Pager* pager, uint32_t page_num) {
+void* get_page(Storage_Manager* Storage_Manager, uint32_t page_num) {
     if (page_num > TABLE_MAX_PAGES) {
         printf("Tried to fetch page number out of bounds. %d > %d\n", page_num, TABLE_MAX_PAGES);
         exit(EXIT_FAILURE);
     }
 
-    if (pager->pages[page_num] == NULL) {
+    if (Storage_Manager->pages[page_num] == NULL) {
         void* page = malloc(PAGE_SIZE);
-        uint32_t num_pages = pager->file_length / PAGE_SIZE;
+        uint32_t num_pages = Storage_Manager->file_length / PAGE_SIZE;
 
-        if (pager->file_length % PAGE_SIZE) {
+        if (Storage_Manager->file_length % PAGE_SIZE) {
             num_pages += 1;
         }
 
         if (page_num <= num_pages) {
-            lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
-            ssize_t bytes_read = read(pager->file_descriptor, page, PAGE_SIZE);
+            lseek(Storage_Manager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
+            ssize_t bytes_read = read(Storage_Manager->file_descriptor, page, PAGE_SIZE);
             if (bytes_read == -1) {
                 printf("Error reading file: %d\n", errno);
                 exit(EXIT_FAILURE);
             }
         }
 
-        pager->pages[page_num] = page;
-        if (page_num >= pager->num_pages) {
-            pager->num_pages = page_num + 1;
+        Storage_Manager->pages[page_num] = page;
+        if (page_num >= Storage_Manager->num_pages) {
+            Storage_Manager->num_pages = page_num + 1;
         }
     }
 
-    return pager->pages[page_num];
+    return Storage_Manager->pages[page_num];
 }
 
 NodeType get_node_type(void* node) {
@@ -273,8 +277,8 @@ void indent(uint32_t level) {
           }
     }
 
-void print_tree(Pager* pager, uint32_t page_num, uint32_t indentation_level) {
-      void* node = get_page(pager, page_num);
+void print_tree(Storage_Manager* Storage_Manager, uint32_t page_num, uint32_t indentation_level) {
+      void* node = get_page(Storage_Manager, page_num);
       uint32_t num_keys, child;
 
               switch (get_node_type(node)) {
@@ -293,13 +297,13 @@ void print_tree(Pager* pager, uint32_t page_num, uint32_t indentation_level) {
                   printf("- internal (size %d)\n", num_keys);
                  for (uint32_t i = 0; i < num_keys; i++) {
                 child = *internal_node_child(node, i);
-                print_tree(pager, child, indentation_level + 1);
+                print_tree(Storage_Manager, child, indentation_level + 1);
 
                        indent(indentation_level + 1);
                 printf("- key %d\n", *internal_node_key(node, i));
               }
                   child = *internal_node_right_child(node);
-                  print_tree(pager, child, indentation_level + 1);
+                  print_tree(Storage_Manager, child, indentation_level + 1);
                   break;
               }
     }
@@ -332,7 +336,7 @@ Cursor* table_start(Table* table) {
     cursor->page_num = table->root_page_num;
       cursor->cell_num = 0;
 
-      void* root_node = get_page(table->pager, table->root_page_num);
+      void* root_node = get_page(table->Storage_Manager, table->root_page_num);
       uint32_t num_cells = *leaf_node_num_cells(root_node);
       cursor->end_of_table = (num_cells == 0);
 
@@ -345,7 +349,7 @@ Cursor* table_start(Table* table) {
 
 
 Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key) {
-      void* node = get_page(table->pager, page_num);
+      void* node = get_page(table->Storage_Manager, page_num);
       uint32_t num_cells = *leaf_node_num_cells(node);
 
               Cursor* cursor = malloc(sizeof(Cursor));
@@ -387,12 +391,9 @@ void initialize_leaf_node(void* node) {
 +go onto the end of the database file
 +*/
 
-uint32_t get_unused_page_num(Pager* pager) { return pager->num_pages; }
+uint32_t get_unused_page_num(Storage_Manager* Storage_Manager) { return Storage_Manager->num_pages; }
 
 
-/*
- * Internal Node Header Layout
- */
 
 
 
@@ -409,10 +410,10 @@ void create_new_root(Table* table, uint32_t right_child_page_num) {
  New root node points to two children.
  */
 
-    void *root = get_page(table->pager, table->root_page_num);
-    void *right_child = get_page(table->pager, right_child_page_num);
-    uint32_t left_child_page_num = get_unused_page_num(table->pager);
-    void *left_child = get_page(table->pager, left_child_page_num);
+    void *root = get_page(table->Storage_Manager, table->root_page_num);
+    void *right_child = get_page(table->Storage_Manager, right_child_page_num);
+    uint32_t left_child_page_num = get_unused_page_num(table->Storage_Manager);
+    void *left_child = get_page(table->Storage_Manager, left_child_page_num);
     /* Left child has data copied from old root */
     memcpy(left_child, root, PAGE_SIZE);
     set_node_root(left_child, false);
@@ -436,9 +437,9 @@ void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value) {
   Update parent or create a new parent.
   */
 
-      void* old_node = get_page(cursor->table->pager, cursor->page_num);
-      uint32_t new_page_num = get_unused_page_num(cursor->table->pager);
-      void* new_node = get_page(cursor->table->pager, new_page_num);
+      void* old_node = get_page(cursor->table->Storage_Manager, cursor->page_num);
+      uint32_t new_page_num = get_unused_page_num(cursor->table->Storage_Manager);
+      void* new_node = get_page(cursor->table->Storage_Manager, new_page_num);
       initialize_leaf_node(new_node);
       /*
   All existing keys plus new key should be divided
@@ -475,7 +476,7 @@ void leaf_node_split_and_insert(Cursor* cursor, uint32_t key, Row* value) {
     }
 
 void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value) {
-    void* node = get_page(cursor->table->pager, cursor->page_num);
+    void* node = get_page(cursor->table->Storage_Manager, cursor->page_num);
 
     uint32_t num_cells = *leaf_node_num_cells(node);
     if (num_cells >= LEAF_NODE_MAX_CELLS) {
@@ -498,12 +499,12 @@ void leaf_node_insert(Cursor* cursor, uint32_t key, Row* value) {
 
 
 Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key) {
-      void* node = get_page(table->pager, page_num);
+      void* node = get_page(table->Storage_Manager, page_num);
       uint32_t num_keys = *internal_node_num_keys(node);
 
-              /* Binary search to find index of child to search */
+
                       uint32_t min_index = 0;
-      uint32_t max_index = num_keys; /* there is one more child than key */
+      uint32_t max_index = num_keys;
 
               while (min_index != max_index) {
             uint32_t index = (min_index + max_index) / 2;
@@ -515,7 +516,7 @@ Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key) {
                 }
           }
       uint32_t child_num = *internal_node_child(node, min_index);
-      void* child = get_page(table->pager, child_num);
+      void* child = get_page(table->Storage_Manager, child_num);
       switch (get_node_type(child)) {
             case NODE_LEAF:
                   return leaf_node_find(table, child_num, key);
@@ -536,7 +537,7 @@ where it should be inserted
 */
 Cursor* table_find(Table* table, uint32_t key) {
       uint32_t root_page_num = table->root_page_num;
-      void* root_node = get_page(table->pager, root_page_num);
+      void* root_node = get_page(table->Storage_Manager, root_page_num);
 
     if (get_node_type(root_node) == NODE_LEAF) {
         return leaf_node_find(table, root_page_num, key);
@@ -547,13 +548,13 @@ Cursor* table_find(Table* table, uint32_t key) {
 
 void* cursor_value(Cursor* cursor) {
     uint32_t page_num = cursor->page_num;
-    void *page = get_page(cursor->table->pager, page_num);
+    void *page = get_page(cursor->table->Storage_Manager, page_num);
     return leaf_node_value(page, cursor->cell_num);
     }
 
 void cursor_advance(Cursor* cursor) {
     uint32_t page_num = cursor->page_num;
-      void* node = get_page(cursor->table->pager, page_num);
+      void* node = get_page(cursor->table->Storage_Manager, page_num);
               cursor->cell_num += 1;
       if (cursor->cell_num >= (*leaf_node_num_cells(node))) {
             cursor->end_of_table = true;
@@ -563,12 +564,12 @@ void cursor_advance(Cursor* cursor) {
 
 Table* new_table() {
     Table* table = malloc(sizeof(Table));
-    table->pager = NULL;
+    table->Storage_Manager = NULL;
    // table->num_rows = 0;
     return table;
 }
 
-Pager* pager_open(const char* filename) {
+Storage_Manager* Storage_Manager_open(const char* filename) {
     int fd = open(filename, O_RDWR | O_CREAT, S_IWUSR | S_IRUSR);
 
     if (fd == -1) {
@@ -578,10 +579,10 @@ Pager* pager_open(const char* filename) {
 
     off_t file_length = lseek(fd, 0, SEEK_END);
 
-    Pager* pager = malloc(sizeof(Pager));
-    pager->file_descriptor = fd;
-    pager->file_length = file_length;
-    pager->num_pages = (file_length / PAGE_SIZE);
+    Storage_Manager* Storage_Manager = malloc(sizeof(Storage_Manager));
+    Storage_Manager->file_descriptor = fd;
+    Storage_Manager->file_length = file_length;
+    Storage_Manager->num_pages = (file_length / PAGE_SIZE);
 
     if (file_length % PAGE_SIZE != 0) {
         // Instead of exiting, pad the file to make it a multiple of PAGE_SIZE
@@ -596,31 +597,31 @@ Pager* pager_open(const char* filename) {
         }
 
         free(padding);
-        pager->num_pages += 1;  // We've added a new page
+        Storage_Manager->num_pages += 1;  // We've added a new page
     }
 
     for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++) {
-        pager->pages[i] = NULL;
+        Storage_Manager->pages[i] = NULL;
     }
 
-    return pager;
+    return Storage_Manager;
 }
 
 
-void pager_flush(Pager* pager, uint32_t page_num) {
-    if (pager->pages[page_num] == NULL) {
+void Storage_Manager_flush(Storage_Manager* Storage_Manager, uint32_t page_num) {
+    if (Storage_Manager->pages[page_num] == NULL) {
         printf("Tried to flush null page\n");
         exit(EXIT_FAILURE);
     }
 
-    off_t offset = lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
+    off_t offset = lseek(Storage_Manager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
 
     if (offset == -1) {
         printf("Error seeking: %d\n", errno);
         exit(EXIT_FAILURE);
     }
 
-    ssize_t bytes_written =  write(pager->file_descriptor, pager->pages[page_num], PAGE_SIZE);
+    ssize_t bytes_written =  write(Storage_Manager->file_descriptor, Storage_Manager->pages[page_num], PAGE_SIZE);
 
     if (bytes_written == -1) {
         printf("Error writing: %d\n", errno);
@@ -629,48 +630,48 @@ void pager_flush(Pager* pager, uint32_t page_num) {
 }
 
 void db_close(Table* table) {
-    Pager* pager = table->pager;
-    for (uint32_t i = 0; i < pager->num_pages; i++) {
-        if (pager->pages[i] == NULL) {
+    Storage_Manager* Storage_Manager = table->Storage_Manager;
+    for (uint32_t i = 0; i < Storage_Manager->num_pages; i++) {
+        if (Storage_Manager->pages[i] == NULL) {
             continue;
         }
-        pager_flush(pager, i);
-        free(pager->pages[i]);
-        pager->pages[i] = NULL;
+        Storage_Manager_flush(Storage_Manager, i);
+        free(Storage_Manager->pages[i]);
+        Storage_Manager->pages[i] = NULL;
     }
 
 
-    int result = close(pager->file_descriptor);
+    int result = close(Storage_Manager->file_descriptor);
     if (result == -1) {
         printf("Error closing db file.\n");
         exit(EXIT_FAILURE);
     }
 
     for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++) {
-        void* page = pager->pages[i];
+        void* page = Storage_Manager->pages[i];
         if (page) {
             free(page);
-            pager->pages[i] = NULL;
+            Storage_Manager->pages[i] = NULL;
         }
     }
 
-    free(pager);
+    free(Storage_Manager);
     free(table);
 }
 
 Table* db_open(const char* filename) {
-    Pager* pager = pager_open(filename);
+    Storage_Manager* Storage_Manager = Storage_Manager_open(filename);
 
 
     Table* table = malloc(sizeof(Table));
-    table->pager = pager;
+    table->Storage_Manager = Storage_Manager;
     table->root_page_num = 0;
 
-              if (pager->num_pages == 0) {
+              if (Storage_Manager->num_pages == 0) {
             // New database file. Initialize page 0 as leaf node.
-                    void* root_node = get_page(pager, 0);
+            void* root_node = get_page(Storage_Manager, 0);
             initialize_leaf_node(root_node);
-                  set_node_root(root_node, true);
+            set_node_root(root_node, true);
           }
     return table;
 }
@@ -744,7 +745,7 @@ MetaCommandResult do_meta_command(InputBuffer* input_buffer, Table* table) {
         exit(EXIT_SUCCESS);
     }else if (strcmp(input_buffer->buffer, ".btree") == 0) {
     printf("Tree:\n");
-        print_tree(table->pager, 0, 0);
+        print_tree(table->Storage_Manager, 0, 0);
     return META_COMMAND_SUCCESS;
   } else if (strcmp(input_buffer->buffer, ".constants") == 0) {
         printf("Constants:\n");
@@ -754,6 +755,9 @@ MetaCommandResult do_meta_command(InputBuffer* input_buffer, Table* table) {
         return META_COMMAND_UNRECOGNIZED_COMMAND;
     }
 }
+
+
+//Act like pareser
 
 PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement) {
     statement->type = STATEMENT_INSERT;
@@ -802,20 +806,20 @@ PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement)
 
 
 enum ExecuteResult execute_insert(Statement* statement, Table* table) {
-    void* node = get_page(table->pager, table->root_page_num);
+    void* node = get_page(table->Storage_Manager, table->root_page_num);
     uint32_t num_cells = (*leaf_node_num_cells(node));
 
 
-    Row* row_to_insert = &(statement->row_to_insert);
+      Row* row_to_insert = &(statement->row_to_insert);
       uint32_t key_to_insert = row_to_insert->id;
       Cursor* cursor = table_find(table, key_to_insert);
 
-              if (cursor->cell_num < num_cells) {
+      if (cursor->cell_num < num_cells) {
             uint32_t key_at_index = *leaf_node_key(node, cursor->cell_num);
             if (key_at_index == key_to_insert) {
                   return EXECUTE_DUPLICATE_KEY;
                 }
-          }
+      }
 
 
     leaf_node_insert(cursor, row_to_insert->id, row_to_insert);
