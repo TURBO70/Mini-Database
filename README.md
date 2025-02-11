@@ -2,7 +2,7 @@
 
 ## Project Overview
 This project is a **Simple Database Management System** (DBMS) implemented in C, designed to provide functionalities similar to a relational database. The core features include efficient data storage, retrieval, and manipulation using a **B+tree** structure for indexing. The system allows users to perform operations like inserting,  and searching for records efficiently.
-
+ 
 ## Key Features
 - **B+tree Indexing**: Utilizes a B+tree data structure to maintain an index for fast data retrieval. This structure allows for efficient searches, insertions, and deletions while maintaining sorted order.
 - **Dynamic Memory Management**: Implements memory management techniques to handle dynamic allocation and deallocation of memory for data storage, enhancing the performance and scalability of the database.
